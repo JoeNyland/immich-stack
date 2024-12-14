@@ -1,0 +1,73 @@
+services:
+  immich-server:
+    container_name: immich-server
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    restart: unless-stopped
+    networks:
+      default:
+      proxy:
+    depends_on:
+      - redis
+      - database
+    environment:
+      DB_DATABASE_NAME: ${DB_DATABASE_NAME:-immich}
+      DB_USERNAME: ${DB_USERNAME:-immich}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is not set}
+    labels:
+      traefik.enable: true
+      traefik.http.routers.immich.rule: Host(`immich`)
+      traefik.http.routers.immich.middlewares: trusted-ipallowlist
+    volumes:
+      - /containers/immich-library:/usr/src/app/upload
+      - /etc/localtime:/etc/localtime:ro
+      - /home/joe/photos:/home/joe/photos:ro
+
+  immich-machine-learning:
+    container_name: immich-ml
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
+    restart: unless-stopped
+    volumes:
+      - /tmp/immich-ml-cache:/cache
+
+  redis:
+    container_name: immich-redis
+    image: redis:6-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: redis-cli ping || exit 1
+    volumes:
+      - /containers/immich-redis:/data
+
+  database:
+    container_name: immich-postgres
+    image: tensorchord/pgvecto-rs:pg14-v0.2.0
+    restart: unless-stopped
+    command: >-
+      postgres
+      -c shared_preload_libraries=vectors.so
+      -c 'search_path="$$user", public, vectors'
+      -c logging_collector=on
+      -c max_wal_size=2GB
+      -c shared_buffers=512MB
+      -c wal_compression=on
+    environment:
+      POSTGRES_DB: ${DB_DATABASE_NAME:-immich}
+      POSTGRES_USER: ${DB_USERNAME:-immich}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is not set}
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    healthcheck:
+      test: >-
+        pg_isready --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" || exit 1;
+        Chksum="$$(psql --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" --tuples-only --no-align
+        --command='SELECT COALESCE(SUM(checksum_failures), 0) FROM pg_stat_database')";
+        echo "checksum failure count is $$Chksum";
+        [ "$$Chksum" = '0' ] || exit 1
+      interval: 5m
+      start_interval: 30s
+      start_period: 5m
+    volumes:
+      - /containers/immich-postgres:/var/lib/postgresql/data
+
+networks:
+  proxy:
+    external: true
